@@ -79,11 +79,31 @@ end
 
 local function get_method_declarations()
 	local bufnr = vim.api.nvim_get_current_buf()
-	local parser = vim.treesitter.get_parser(bufnr)
-	if not parser then
+
+	local filetype = vim.bo[bufnr].filetype
+	if not filetype or filetype == "" then
 		return {}
 	end
-	local tree = parser:parse()[1]
+
+	local line_count = vim.api.nvim_buf_line_count(bufnr)
+	if line_count == 1 then
+		local first_line = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1]
+		if not first_line or first_line == "" then
+			return {}
+		end
+	end
+
+	local success, parser = pcall(vim.treesitter.get_parser, bufnr)
+	if not success or not parser then
+		return {}
+	end
+
+	local tree_ok, trees = pcall(parser.parse, parser)
+	if not tree_ok or not trees or #trees == 0 then
+		return {}
+	end
+
+	local tree = trees[1]
 	local root = tree:root()
 	local methods = {}
 	local lang = parser:lang()
@@ -240,21 +260,25 @@ local function get_method_declarations()
 		]]
 		ok, query = pcall(vim.treesitter.query.parse, lang, simple_query)
 		if not ok then
-			vim.notify("All treesitter queries failed for " .. lang, vim.log.levels.WARN)
+			-- Silently return empty table instead of showing warning for empty buffers
 			return {}
-		else
-			vim.notify("Using simple fallback query for " .. lang, vim.log.levels.INFO)
 		end
 	end
 
 	local captures = {}
-	for id, node in query:iter_captures(root, bufnr, 0, -1) do
-		local capture_name = query.captures[id]
-		table.insert(captures, {
-			name = capture_name,
-			node = node,
-			id = id,
-		})
+	local capture_ok, _ = pcall(function()
+		for id, node in query:iter_captures(root, bufnr, 0, -1) do
+			local capture_name = query.captures[id]
+			table.insert(captures, {
+				name = capture_name,
+				node = node,
+				id = id,
+			})
+		end
+	end)
+
+	if not capture_ok then
+		return {}
 	end
 
 	local i = 1
