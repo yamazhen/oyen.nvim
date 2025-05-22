@@ -80,14 +80,11 @@ end
 local function get_method_declarations()
 	local bufnr = vim.api.nvim_get_current_buf()
 	local parser = vim.treesitter.get_parser(bufnr)
-
 	if not parser then
 		return {}
 	end
-
 	local tree = parser:parse()[1]
 	local root = tree:root()
-
 	local methods = {}
 	local lang = parser:lang()
 
@@ -99,11 +96,60 @@ local function get_method_declarations()
 		]],
 		javascript = [[
 			(method_definition
-				name: (property_name) @method_name
+				name: (property_identifier) @method_name
 			) @method_decl
 			
 			(function_declaration
 				name: (identifier) @method_name
+			) @method_decl
+			
+			(variable_declarator
+				name: (identifier) @method_name
+				value: (function_expression)
+			) @method_decl
+			
+			(variable_declarator
+				name: (identifier) @method_name
+				value: (arrow_function)
+			) @method_decl
+			
+			(pair
+				key: (property_identifier) @method_name
+				value: (function_expression)
+			) @method_decl
+			
+			(pair
+				key: (property_identifier) @method_name
+				value: (arrow_function)
+			) @method_decl
+		]],
+		typescript = [[
+			(method_definition
+				name: (property_identifier) @method_name
+			) @method_decl
+			
+			(function_declaration
+				name: (identifier) @method_name
+			) @method_decl
+			
+			(variable_declarator
+				name: (identifier) @method_name
+				value: (function_expression)
+			) @method_decl
+			
+			(variable_declarator
+				name: (identifier) @method_name
+				value: (arrow_function)
+			) @method_decl
+			
+			(pair
+				key: (property_identifier) @method_name
+				value: (function_expression)
+			) @method_decl
+			
+			(pair
+				key: (property_identifier) @method_name
+				value: (arrow_function)
 			) @method_decl
 		]],
 		python = [[
@@ -156,11 +202,15 @@ local function get_method_declarations()
 		]],
 	}
 
-	if lang == "tsx" then
-		lang = "javascript"
-	end
+	local lang_map = {
+		tsx = "typescript",
+		javascriptreact = "javascript",
+		typescriptreact = "typescript",
+	}
 
-	local query_string = queries[lang]
+	local query_lang = lang_map[lang] or lang
+	local query_string = queries[query_lang]
+
 	if not query_string then
 		query_string = [[
 			(method_declaration
@@ -179,8 +229,22 @@ local function get_method_declarations()
 
 	local ok, query = pcall(vim.treesitter.query.parse, lang, query_string)
 	if not ok then
-		vim.notify("Treesitter query failed for " .. lang .. ": " .. tostring(query), vim.log.levels.WARN)
-		return {}
+		local simple_query = [[
+			(function_declaration
+				name: (identifier) @method_name
+			) @method_decl
+			
+			(method_definition
+				name: (property_identifier) @method_name
+			) @method_decl
+		]]
+		ok, query = pcall(vim.treesitter.query.parse, lang, simple_query)
+		if not ok then
+			vim.notify("All treesitter queries failed for " .. lang, vim.log.levels.WARN)
+			return {}
+		else
+			vim.notify("Using simple fallback query for " .. lang, vim.log.levels.INFO)
+		end
 	end
 
 	local captures = {}
@@ -196,12 +260,11 @@ local function get_method_declarations()
 	local i = 1
 	while i <= #captures do
 		local capture = captures[i]
-
 		if capture.name == "method_decl" then
 			local start_row, start_col, end_row, end_col = capture.node:range()
-
 			local method_name = ""
-			for j = i, math.min(i + 5, #captures) do
+
+			for j = 1, #captures do
 				if captures[j].name == "method_name" then
 					local name_start_row = captures[j].node:range()
 					if name_start_row >= start_row and name_start_row <= end_row then
@@ -213,10 +276,10 @@ local function get_method_declarations()
 
 			if method_name == "" then
 				local function find_identifier_in_node(node)
-					if node:type() == "identifier" then
+					local node_type = node:type()
+					if node_type == "identifier" or node_type == "property_identifier" then
 						return vim.treesitter.get_node_text(node, bufnr)
 					end
-
 					for child in node:iter_children() do
 						local result = find_identifier_in_node(child)
 						if result then
@@ -225,7 +288,6 @@ local function get_method_declarations()
 					end
 					return nil
 				end
-
 				method_name = find_identifier_in_node(capture.node) or "unknown"
 			end
 
@@ -238,7 +300,6 @@ local function get_method_declarations()
 				node = capture.node,
 			})
 		end
-
 		i = i + 1
 	end
 
@@ -253,13 +314,11 @@ function M.show_method_popup(methods, current_index)
 	if #methods == 0 then
 		return
 	end
-
 	M.stop_popup_timer()
 	if M.method_popup_win and vim.api.nvim_win_is_valid(M.method_popup_win) then
 		pcall(vim.api.nvim_win_close, M.method_popup_win, true)
 		M.method_popup_win = nil
 	end
-
 	if not M.method_popup_buf or not vim.api.nvim_buf_is_valid(M.method_popup_buf) then
 		M.method_popup_buf = vim.api.nvim_create_buf(false, true)
 		if not M.method_popup_buf then
@@ -271,11 +330,25 @@ function M.show_method_popup(methods, current_index)
 	end
 
 	local max_display = M.config.popup_max_display or 5
-	local start_idx = math.max(1, current_index - math.floor(max_display / 2))
-	local end_idx = math.min(start_idx + max_display - 1, #methods)
+	local total_methods = #methods
 
-	if end_idx - start_idx + 1 < max_display and #methods > max_display then
-		start_idx = math.max(1, end_idx - max_display + 1)
+	-- Fixed window positioning logic
+	local start_idx, end_idx
+	if total_methods <= max_display then
+		-- If we have fewer methods than max_display, show all
+		start_idx = 1
+		end_idx = total_methods
+	else
+		-- Calculate the ideal start position (centered around current_index)
+		local half_display = math.floor(max_display / 2)
+		start_idx = math.max(1, current_index - half_display)
+
+		-- Ensure we don't go past the end
+		if start_idx + max_display - 1 > total_methods then
+			start_idx = total_methods - max_display + 1
+		end
+
+		end_idx = start_idx + max_display - 1
 	end
 
 	local lines = {}
@@ -293,6 +366,7 @@ function M.show_method_popup(methods, current_index)
 	local ns_id = vim.api.nvim_create_namespace("bufstack_method_highlight")
 	vim.api.nvim_buf_clear_namespace(M.method_popup_buf, ns_id, 0, -1)
 
+	-- Calculate which line in the popup should be highlighted
 	local highlight_line = current_index - start_idx
 	if highlight_line >= 0 and highlight_line < #lines then
 		local line_length = #lines[highlight_line + 1]
@@ -301,7 +375,6 @@ function M.show_method_popup(methods, current_index)
 			end_col = line_length,
 			hl_group = "Statement",
 		})
-
 		if not success then
 			pcall(
 				vim.highlight.range,
