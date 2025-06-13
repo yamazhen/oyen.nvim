@@ -8,7 +8,7 @@ local M = {}
 
 -- plugin state
 M.is_cycling = false
-M.cycle_mode = "method"
+M.cycle_mode = "buffer"
 
 -- buffer cycle
 M.histories = {}
@@ -38,7 +38,7 @@ M.method_debounce_delay = 100
 M.config = {
 	max_history_size = 30,
 	popup_timeout = 1000,
-	popup_max_display = 5,
+	popup_max_display = 8,
 	path_display = {
 		enabled = true,
 		mode = "default",
